@@ -48,6 +48,14 @@ impl<M: Method> Socks5Stream<M> {
         method_factory: F,
     ) -> Result<Self> {
         let socket = TcpStream::connect(proxy_addr).await?;
+        Self::connect_with_socket(socket, target_addr, method_factory).await
+    }
+
+    pub async fn connect_with_socket<S: AsyncRead + AsyncWrite + Unpin, F: FnOnce(S) -> M>(
+        socket: S,
+        target_addr: TargetAddr,
+        method_factory: F,
+    ) -> Result<Self> {
         let mut client = Socks5Client::connect(socket, method_factory).await?;
         let _ = client
             .send_request(Request::new(RequestType::Connect, target_addr))

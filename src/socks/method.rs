@@ -1,5 +1,3 @@
-use anyhow::Result;
-
 use async_trait::async_trait;
 use std::io;
 use std::pin::Pin;
@@ -12,11 +10,11 @@ use tokio::net::UdpSocket;
 /// A trait for objects that implement the logic of socks5's method-dependent sub-negotiation.
 pub trait Method: AsyncRead + AsyncWrite + Unpin {
     // Establish the method-dependent sub-negotiation context.
-    async fn handshake(&mut self) -> Result<()>;
+    async fn handshake(&mut self) -> io::Result<()>;
 
-    async fn register_udp_socket(&mut self, socket: UdpSocket) -> Result<()>;
-    async fn send(&mut self) -> Result<usize>;
-    async fn recv(&mut self) -> Result<usize>;
+    async fn register_udp_socket(&mut self, socket: UdpSocket) -> io::Result<()>;
+    async fn send(&mut self) -> io::Result<usize>;
+    async fn recv(&mut self) -> io::Result<usize>;
     fn code() -> u8;
 }
 
@@ -65,19 +63,19 @@ impl<S: AsyncWrite + Unpin + Send> AsyncWrite for NoAuthentication<S> {
 
 #[async_trait]
 impl<S: AsyncWrite + AsyncRead + Unpin + Send> Method for NoAuthentication<S> {
-    async fn handshake(&mut self) -> Result<()> {
+    async fn handshake(&mut self) -> io::Result<()> {
         Ok(())
     }
 
-    async fn register_udp_socket(&mut self, _: UdpSocket) -> Result<()> {
+    async fn register_udp_socket(&mut self, _: UdpSocket) -> io::Result<()> {
         unimplemented!()
     }
 
-    async fn send(&mut self) -> Result<usize> {
+    async fn send(&mut self) -> io::Result<usize> {
         unimplemented!()
     }
 
-    async fn recv(&mut self) -> Result<usize> {
+    async fn recv(&mut self) -> io::Result<usize> {
         unimplemented!()
     }
 

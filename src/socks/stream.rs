@@ -2,12 +2,11 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use anyhow::Result;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 use crate::socks::client::{Request, RequestType, Socks5Client};
-use crate::socks::{Method, TargetAddr};
+use crate::socks::{Method, Result, TargetAddr};
 
 pub struct Socks5Stream<M> {
     client: Socks5Client<M>,

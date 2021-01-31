@@ -1,7 +1,6 @@
 pub mod socks;
 
-use crate::socks::{NoAuthentication, Socks5Stream, TargetAddr};
-use anyhow::Result;
+use crate::socks::{NoAuthentication, Result, Socks5Stream, TargetAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::main]

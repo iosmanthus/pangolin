@@ -1,15 +1,16 @@
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use anyhow::{anyhow, bail, Result};
+// use anyhow::{anyhow, bail, Result};
 use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::socks::Method;
-
+use crate::socks::{Result, Socks5Error};
 const VERSION: u8 = 0x5;
 
 #[derive(Debug, Clone, Copy)]
@@ -30,14 +31,9 @@ pub(crate) struct Request {
     target_addr: TargetAddr,
 }
 
-impl Request {
-    pub fn new(request_type: RequestType, target_addr: TargetAddr) -> Self {
-        Self {
-            request_type,
-            target_addr,
-        }
-    }
-    fn try_into_bytes(self) -> Result<Vec<u8>> {
+impl TryFrom<Request> for Vec<u8> {
+    type Error = Socks5Error;
+    fn try_from(request: Request) -> Result<Self> {
         use TargetAddr::*;
         let mut buf = Vec::with_capacity(262);
 
@@ -47,13 +43,13 @@ impl Request {
         // | 1  |  1  | X'00' |  1   | Variable |    2     |
         // +----+-----+-------+------+----------+----------+
         buf.push(VERSION);
-        buf.push(self.request_type as u8);
+        buf.push(request.request_type as u8);
         buf.push(0x00);
 
-        match self.target_addr {
+        match request.target_addr {
             Ip(SocketAddr::V4(socket)) => {
                 buf.push(0x01);
-                buf.extend(socket.ip().octets().iter());
+                buf.extend_from_slice(&socket.ip().octets());
                 WriteBytesExt::write_u16::<NetworkEndian>(&mut buf, socket.port()).unwrap();
             }
             Domain(domain, port) => {
@@ -62,19 +58,28 @@ impl Request {
                     domain
                         .len()
                         .try_into()
-                        .map_err(|_| anyhow!("DomainNameTooLong"))?,
+                        .map_err(|_| Socks5Error::DomainTooLong)?,
                 );
-                buf.extend(domain.as_bytes());
+                buf.extend_from_slice(domain.as_bytes());
                 WriteBytesExt::write_u16::<NetworkEndian>(&mut buf, port).unwrap();
             }
             Ip(SocketAddr::V6(socket)) => {
                 buf.push(0x04);
-                buf.extend(socket.ip().octets().iter());
+                buf.extend_from_slice(&socket.ip().octets());
                 WriteBytesExt::write_u16::<NetworkEndian>(&mut buf, socket.port()).unwrap();
             }
         }
 
         Ok(buf)
+    }
+}
+
+impl Request {
+    pub fn new(request_type: RequestType, target_addr: TargetAddr) -> Self {
+        Self {
+            request_type,
+            target_addr,
+        }
     }
 }
 
@@ -103,10 +108,14 @@ impl<M: Method> Socks5Client<M> {
         socket.read_exact(&mut buf).await?;
 
         if buf[0] != VERSION {
-            bail!("InvalidResponseVersion")
+            return Err(Socks5Error::InvalidResponseVersion {
+                expected: VERSION,
+                actual: buf[0],
+            });
         }
+
         if buf[1] == 0xff {
-            bail!("NoAcceptableMethod")
+            return Err(Socks5Error::NoAcceptableMethod);
         }
 
         let mut method = method_factory(socket);
@@ -122,7 +131,8 @@ impl<M: Method> Socks5Client<M> {
     // | 1  |  1  | X'00' |  1   | Variable |    2     |
     // +----+-----+-------+------+----------+----------+
     pub async fn send_request(&mut self, request: Request) -> Result<TargetAddr> {
-        self.method.write(&request.try_into_bytes()?).await?;
+        let data: Vec<u8> = request.try_into()?;
+        self.method.write(&data).await?;
         let addr = self.recv_reply().await?;
         Ok(addr)
     }
@@ -139,24 +149,30 @@ impl<M: Method> Socks5Client<M> {
         self.method.read_exact(&mut buf[..4]).await?;
 
         if buf[0] != VERSION {
-            bail!("InvalidResponseVersion")
+            return Err(Socks5Error::InvalidResponseVersion {
+                expected: VERSION,
+                actual: buf[0],
+            });
         }
 
         match buf[1] {
             0x00 => {}
-            0x01 => bail!("GeneralSocksServerFailure"),
-            0x02 => bail!("ConnectionNotAllowed"),
-            0x03 => bail!("NetworkUnreachable"),
-            0x04 => bail!("HostUnreachable"),
-            0x05 => bail!("ConnectionRefused"),
-            0x06 => bail!("TtlExpired"),
-            0x07 => bail!("CommandNotSupported"),
-            0x08 => bail!("AddressTypeNotSupported"),
-            _ => bail!("Unassigned"),
+            0x01 => return Err(Socks5Error::GeneralSocksServerFailure),
+            0x02 => return Err(Socks5Error::ConnectionNotAllowed),
+            0x03 => return Err(Socks5Error::NetworkUnreachable),
+            0x04 => return Err(Socks5Error::HostUnreachable),
+            0x05 => return Err(Socks5Error::ConnectionRefused),
+            0x06 => return Err(Socks5Error::TtlExpired),
+            0x07 => return Err(Socks5Error::CommandNotSupported),
+            0x08 => return Err(Socks5Error::AddressTypeNotSupported),
+            _ => return Err(Socks5Error::Unassigned),
         }
 
         if buf[2] != 0x00 {
-            bail!("InvalidReservedByte")
+            return Err(Socks5Error::InvalidReservedByte {
+                expected: 0x00,
+                actual: buf[2],
+            });
         }
 
         let target_addr = match buf[3] {
@@ -196,7 +212,7 @@ impl<M: Method> Socks5Client<M> {
                 Ip(SocketAddr::from((ip, port)))
             }
 
-            _ => bail!("InvalidAddressType"),
+            _ => return Err(Socks5Error::InvalidAddressType),
         };
 
         Ok(target_addr)

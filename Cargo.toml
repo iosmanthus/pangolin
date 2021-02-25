@@ -11,3 +11,4 @@ tokio = { version = "*", features = ["full"] }
 async-trait = "0.1.42"
 thiserror = "1"
 byteorder = "1"
+pin-project = "1"

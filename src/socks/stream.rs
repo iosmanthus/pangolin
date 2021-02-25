@@ -10,9 +10,23 @@ use crate::socks::{Method, Result, TargetAddr};
 
 pub struct Socks5Stream<M> {
     client: Socks5Client<M>,
+    peer_addr: TargetAddr,
 }
 
-impl<M: Method> AsyncRead for Socks5Stream<M> {
+impl<M> Socks5Stream<M> {
+    pub(crate) fn new(client: Socks5Client<M>, peer_addr: TargetAddr) -> Self {
+        Socks5Stream { client, peer_addr }
+    }
+
+    pub fn peer_addr(&self) -> TargetAddr {
+        self.peer_addr.clone()
+    }
+}
+
+impl<M> AsyncRead for Socks5Stream<M>
+where
+    M: Method,
+{
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -22,7 +36,10 @@ impl<M: Method> AsyncRead for Socks5Stream<M> {
     }
 }
 
-impl<M: Method> AsyncWrite for Socks5Stream<M> {
+impl<M: Method> AsyncWrite for Socks5Stream<M>
+where
+    M: Method,
+{
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -40,25 +57,28 @@ impl<M: Method> AsyncWrite for Socks5Stream<M> {
     }
 }
 
-impl<M: Method> Socks5Stream<M> {
-    pub async fn connect<F: FnOnce(TcpStream) -> M, A: ToSocketAddrs>(
-        proxy_addr: A,
-        target_addr: TargetAddr,
-        method_factory: F,
-    ) -> Result<Self> {
-        let socket = TcpStream::connect(proxy_addr).await?;
-        Self::connect_with_socket(socket, target_addr, method_factory).await
-    }
-
-    pub async fn connect_with_socket<S: AsyncRead + AsyncWrite + Unpin, F: FnOnce(S) -> M>(
-        socket: S,
-        target_addr: TargetAddr,
-        method_factory: F,
-    ) -> Result<Self> {
-        let mut client = Socks5Client::connect(socket, method_factory).await?;
+impl<M> Socks5Stream<M>
+where
+    M: Method,
+{
+    pub async fn connect_with_socket(socket: M::Stream, target_addr: TargetAddr) -> Result<Self> {
+        let mut client = Socks5Client::<M>::connect(socket).await?;
         let _ = client
-            .send_request(Request::new(RequestType::Connect, target_addr))
+            .send_request(Request::new(RequestType::Connect, target_addr.clone()))
             .await?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            peer_addr: target_addr,
+        })
+    }
+}
+
+impl<M> Socks5Stream<M>
+where
+    M: Method<Stream = TcpStream>,
+{
+    pub async fn connect<A: ToSocketAddrs>(proxy_addr: A, target_addr: TargetAddr) -> Result<Self> {
+        let socket = TcpStream::connect(proxy_addr).await?;
+        Self::connect_with_socket(socket, target_addr).await
     }
 }

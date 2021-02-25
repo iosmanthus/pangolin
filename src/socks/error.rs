@@ -41,4 +41,10 @@ pub enum Socks5Error {
 
     #[error("invalid address type")]
     InvalidAddressType,
+
+    #[error("invalid target address")]
+    InvalidTargetAddress,
+
+    #[error("datagram socket not registered")]
+    DatagramSocketNotRegistered,
 }

@@ -1,29 +1,21 @@
-use std::convert::TryFrom;
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::io;
 use std::net::SocketAddr;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-// use anyhow::{anyhow, bail, Result};
 use byteorder::{ByteOrder, NetworkEndian, WriteBytesExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use crate::socks::Method;
-use crate::socks::{Result, Socks5Error};
-const VERSION: u8 = 0x5;
+use crate::socks::datagram::AsyncDatagram;
+use crate::socks::{Method, Result, Socks5Error, TargetAddr, VERSION};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RequestType {
     Connect = 0x01,
-    // Bind = 0x02,
-    // UdpAssociate = 0x03,
-}
-
-#[derive(Debug, Clone)]
-pub enum TargetAddr {
-    Ip(SocketAddr),
-    Domain(String, u16),
+    Bind = 0x02,
+    UdpAssociate = 0x03,
 }
 
 pub(crate) struct Request {
@@ -83,15 +75,28 @@ impl Request {
     }
 }
 
+impl<M> Deref for Socks5Client<M> {
+    type Target = M;
+    fn deref(&self) -> &Self::Target {
+        &self.method
+    }
+}
+
+impl<M> DerefMut for Socks5Client<M> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.method
+    }
+}
+
 pub(crate) struct Socks5Client<M> {
     method: M,
 }
 
-impl<M: Method> Socks5Client<M> {
-    pub async fn connect<S: AsyncRead + AsyncWrite + Unpin, F: FnOnce(S) -> M>(
-        mut socket: S,
-        method_factory: F,
-    ) -> Result<Self> {
+impl<M> Socks5Client<M>
+where
+    M: Method,
+{
+    pub async fn connect(mut socket: M::Stream) -> Result<Self> {
         // +----+----------+----------+
         // |VER | NMETHODS | METHODS  |
         // +----+----------+----------+
@@ -118,7 +123,7 @@ impl<M: Method> Socks5Client<M> {
             return Err(Socks5Error::NoAcceptableMethod);
         }
 
-        let mut method = method_factory(socket);
+        let mut method = M::create(socket).await?;
         // Enter method dependent sub-negotiation phase
         method.handshake().await?;
 
@@ -142,7 +147,7 @@ impl<M: Method> Socks5Client<M> {
     // +----+-----+-------+------+----------+----------+
     // | 1  |  1  | X'00' |  1   | Variable |    2     |
     // +----+-----+-------+------+----------+----------+
-    async fn recv_reply(&mut self) -> Result<TargetAddr> {
+    pub async fn recv_reply(&mut self) -> Result<TargetAddr> {
         use TargetAddr::*;
 
         let mut buf = [0; 262];
@@ -219,7 +224,32 @@ impl<M: Method> Socks5Client<M> {
     }
 }
 
-impl<M: Method> AsyncRead for Socks5Client<M> {
+impl<M> AsyncDatagram for Socks5Client<M>
+where
+    M: Method,
+{
+    fn poll_send_to(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        target: SocketAddr,
+    ) -> Poll<Result<usize>> {
+        unimplemented!()
+    }
+
+    fn poll_recv_from(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<SocketAddr>> {
+        unimplemented!()
+    }
+}
+
+impl<M> AsyncRead for Socks5Client<M>
+where
+    M: Method,
+{
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -229,7 +259,10 @@ impl<M: Method> AsyncRead for Socks5Client<M> {
     }
 }
 
-impl<M: Method> AsyncWrite for Socks5Client<M> {
+impl<M> AsyncWrite for Socks5Client<M>
+where
+    M: Method,
+{
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

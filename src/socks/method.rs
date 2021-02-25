@@ -4,46 +4,85 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::socks::datagram::AsyncDatagram;
+use crate::socks::{Result, Socks5Error};
+use std::net::SocketAddr;
+use std::ops::DerefMut;
 use tokio::net::UdpSocket;
 
 #[async_trait]
 /// A trait for objects that implement the logic of socks5's method-dependent sub-negotiation.
-pub trait Method: AsyncRead + AsyncWrite + Unpin {
-    // Establish the method-dependent sub-negotiation context.
-    async fn handshake(&mut self) -> io::Result<()>;
+pub trait Method: AsyncRead + AsyncWrite + AsyncDatagram + Unpin + Send + Sized {
+    type Stream: AsyncRead + AsyncWrite + Unpin;
+    type Datagram: AsyncDatagram;
 
-    async fn register_udp_socket(&mut self, socket: UdpSocket) -> io::Result<()>;
-    async fn send(&mut self) -> io::Result<usize>;
-    async fn recv(&mut self) -> io::Result<usize>;
+    async fn create(socket: Self::Stream) -> Result<Self>;
+
+    // Establish the method-dependent sub-negotiation context.
+    async fn handshake(&mut self) -> Result<()>;
+
+    // UDP-related methods
+    async fn register_endpoints(&mut self, src: Self::Datagram, dst: SocketAddr) -> Result<()>;
+
     fn code() -> u8;
 }
 
 #[derive(Default)]
-pub struct NoAuthentication<S: Send> {
+pub struct NoAuthentication<S, U = UdpSocket> {
     socket: S,
+    datagram_socket: Option<U>,
+    dst: Option<SocketAddr>,
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> NoAuthentication<S> {
-    pub fn new(socket: S) -> Self {
-        Self { socket }
+impl<S, U> AsyncDatagram for NoAuthentication<S, U>
+where
+    U: AsyncDatagram,
+{
+    fn poll_send_to(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        target: SocketAddr,
+    ) -> Poll<Result<usize>> {
+        self.datagram_socket.as_ref().map_or_else(
+            || Poll::Ready(Err(Socks5Error::DatagramSocketNotRegistered)),
+            |datagram| datagram.poll_send_to(cx, buf, target),
+        )
     }
 
-    pub fn create() -> Box<dyn FnOnce(S) -> Self> {
-        Box::new(NoAuthentication::new)
+    fn poll_recv_from(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<SocketAddr>> {
+        self.datagram_socket.as_ref().map_or_else(
+            || Poll::Ready(Err(Socks5Error::DatagramSocketNotRegistered)),
+            |datagram| datagram.poll_recv_from(cx, buf),
+        )
     }
 }
 
-impl<S: AsyncRead + Unpin + Send> AsyncRead for NoAuthentication<S> {
+impl<S, U> AsyncRead for NoAuthentication<S, U>
+where
+    S: AsyncRead + Unpin,
+    U: Unpin,
+{
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        self.deref_mut();
         Pin::new(&mut self.socket).poll_read(cx, buf)
     }
 }
 
-impl<S: AsyncWrite + Unpin + Send> AsyncWrite for NoAuthentication<S> {
+impl<S, U> AsyncWrite for NoAuthentication<S, U>
+where
+    S: AsyncWrite + Unpin,
+    U: Unpin,
+{
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -62,21 +101,29 @@ impl<S: AsyncWrite + Unpin + Send> AsyncWrite for NoAuthentication<S> {
 }
 
 #[async_trait]
-impl<S: AsyncWrite + AsyncRead + Unpin + Send> Method for NoAuthentication<S> {
-    async fn handshake(&mut self) -> io::Result<()> {
+impl<S, U> Method for NoAuthentication<S, U>
+where
+    S: AsyncWrite + AsyncRead + Unpin + Send,
+    U: AsyncDatagram + Unpin + Send,
+{
+    type Stream = S;
+    type Datagram = U;
+    async fn create(socket: S) -> Result<Self> {
+        Ok(Self {
+            socket,
+            datagram_socket: None,
+            dst: None,
+        })
+    }
+
+    async fn handshake(&mut self) -> Result<()> {
         Ok(())
     }
 
-    async fn register_udp_socket(&mut self, _: UdpSocket) -> io::Result<()> {
-        unimplemented!()
-    }
-
-    async fn send(&mut self) -> io::Result<usize> {
-        unimplemented!()
-    }
-
-    async fn recv(&mut self) -> io::Result<usize> {
-        unimplemented!()
+    async fn register_endpoints(&mut self, src: Self::Datagram, dst: SocketAddr) -> Result<()> {
+        self.datagram_socket = Some(src);
+        self.dst = Some(dst);
+        Ok(())
     }
 
     fn code() -> u8 {
